@@ -1,0 +1,9 @@
+YOU CAN USE THIS COMMAND TO REGISTER A PEER
+CHANGE THE DETAILS 
+
+curl -X POST http://localhost:3002/register -H "Content-Type: application/json" -d '{
+    "name": "peer1",
+    "ip_address": "192.168.1.10",
+    "udp_socket": 5001,
+    "tcp_socket": 6001
+}'
