@@ -1,65 +1,66 @@
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import threading
 from pymongo import MongoClient
 
 MONGO_URI = "mongodb+srv://admin:w5HI4gOqP1a3QHC4@cluster0.rpi2b.mongodb.net/p2p_shopping?retryWrites=true&w=majority&appName=Cluster0"
 client = MongoClient(MONGO_URI)
-db = client["p2p_shopping"]  
-peers_collection = db["registered_peers"]  
+db = client["p2p_shopping"]
+peers_collection = db["registered_peers"]
 
 class ThreadedHTTPServer(HTTPServer):
     def process_request(self, request, client_address):
         thread = threading.Thread(target=self.__new_connection, args=(request, client_address))
         thread.start()
-        thread.join()
 
     def __new_connection(self, request, client_address):
         self.finish_request(request, client_address)
         self.shutdown_request(request)
 
 class MyRequestHandler(BaseHTTPRequestHandler):
-
+    
     def _send_response(self, response, status_code=200):
         self.send_response(status_code)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps(response).encode('utf-8'))
 
+    def _get_post_data(self):
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        return json.loads(post_data)
+
     def do_POST(self):
         parsed_path = urlparse(self.path)
 
         if parsed_path.path == '/register':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            peer_info = json.loads(post_data)
-
+            peer_info = self._get_post_data()
             name = peer_info.get("name")
             ip_address = peer_info.get("ip_address")
             udp_socket = peer_info.get("udp_socket")
             tcp_socket = peer_info.get("tcp_socket")
 
-            # check if the user's name is already registeredd
+            # Check if the user's name is already registereddddd
             if peers_collection.find_one({"name": name}):
-                response = {"error": "Name already in use."}
+                response = {"error": "REGISTER-DENIED: Name already in use."}
                 self._send_response(response, 400)
             else:
-                peers_collection.insert_one({
-                    "name": name,
-                    "ip_address": ip_address,
-                    "udp_socket": udp_socket,
-                    "tcp_socket": tcp_socket
-                })
-                response = {"message": "REGISTERED", "name": name}
-                self._send_response(response, 201)
+                try:
+                    peers_collection.insert_one({
+                        "name": name,
+                        "ip_address": ip_address,
+                        "udp_socket": udp_socket,
+                        "tcp_socket": tcp_socket
+                    })
+                    response = {"message": "REGISTERED", "name": name}
+                    self._send_response(response, 201)
+                except Exception as e:
+                    response = {"error": f"REGISTER-DENIED: {str(e)}"}
+                    self._send_response(response, 500)
 
-        # deregister the peer IF he exists
         elif parsed_path.path == '/deregister':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            peer_info = json.loads(post_data)
-
+            peer_info = self._get_post_data()
             name = peer_info.get("name")
 
             # Remove peer from MongoDB if it exists
@@ -68,7 +69,6 @@ class MyRequestHandler(BaseHTTPRequestHandler):
                 response = {"message": "DE-REGISTERED", "name": name}
                 self._send_response(response, 200)
             else:
-                # if not found just ignore
                 response = {"error": "Name not registered."}
                 self._send_response(response, 400)
         else:
