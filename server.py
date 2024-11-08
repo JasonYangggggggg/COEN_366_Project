@@ -1,6 +1,5 @@
+import socket
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
 import threading
 from pymongo import MongoClient
 
@@ -9,76 +8,56 @@ client = MongoClient(MONGO_URI)
 db = client["p2p_shopping"]
 peers_collection = db["registered_peers"]
 
-class ThreadedHTTPServer(HTTPServer):
-    def process_request(self, request, client_address):
-        thread = threading.Thread(target=self.__new_connection, args=(request, client_address))
-        thread.start()
+# UDP SETTINGS
+UDP_IP = "0.0.0.0"  
+UDP_PORT = 5000 
 
-    def __new_connection(self, request, client_address):
-        self.finish_request(request, client_address)
-        self.shutdown_request(request)
+#UDP SOCKET SETUP 
+#WE ARE NOT USING TCP HERE ( YET )
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind((UDP_IP, UDP_PORT))
 
-class MyRequestHandler(BaseHTTPRequestHandler):
+print(f"UDP server listening on port {UDP_PORT}")
+
+def handle_register(data, addr):
+    name = data.get("name")
+    ip_address = addr[0]
+    udp_socket = data.get("udp_socket")
+    tcp_socket = data.get("tcp_socket")
+
+    # Check if the USERNAME is taken
+    if peers_collection.find_one({"name": name}):
+        response = {"error": "REGISTER-DENIED: Name already in use."} 
+        # ERROR MESSAGE ACCORDING TO PROJECT GUIDELINES
+    else:
+        peers_collection.insert_one({
+            "name": name,
+            "ip_address": ip_address,
+            "udp_socket": udp_socket,
+            "tcp_socket": tcp_socket
+        })
+        response = {"message": "REGISTERED", "name": name}
     
-    def _send_response(self, response, status_code=200):
-        self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(response).encode('utf-8'))
+    sock.sendto(json.dumps(response).encode(), addr)
 
-    def _get_post_data(self):
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-        return json.loads(post_data)
+def handle_deregister(data, addr):
+    name = data.get("name")
+    
+    #DELETE USER IF FOUND
+    if peers_collection.find_one({"name": name}):
+        peers_collection.delete_one({"name": name})
+        response = {"message": "DE-REGISTERED", "name": name}
+    else:
+        response = {"error": "Name not registered."}
 
-    def do_POST(self):
-        parsed_path = urlparse(self.path)
+    sock.sendto(json.dumps(response).encode(), addr)
 
-        if parsed_path.path == '/register':
-            peer_info = self._get_post_data()
-            name = peer_info.get("name")
-            ip_address = peer_info.get("ip_address")
-            udp_socket = peer_info.get("udp_socket")
-            tcp_socket = peer_info.get("tcp_socket")
+#keep listening all the timeee
+while True:
+    message, client_address = sock.recvfrom(4096)
+    data = json.loads(message.decode())
 
-            # Check if the user's name is already registereddddd
-            if peers_collection.find_one({"name": name}):
-                response = {"error": "REGISTER-DENIED: Name already in use."}
-                self._send_response(response, 400)
-            else:
-                try:
-                    peers_collection.insert_one({
-                        "name": name,
-                        "ip_address": ip_address,
-                        "udp_socket": udp_socket,
-                        "tcp_socket": tcp_socket
-                    })
-                    response = {"message": "REGISTERED", "name": name}
-                    self._send_response(response, 201)
-                except Exception as e:
-                    response = {"error": f"REGISTER-DENIED: {str(e)}"}
-                    self._send_response(response, 500)
-
-        elif parsed_path.path == '/deregister':
-            peer_info = self._get_post_data()
-            name = peer_info.get("name")
-
-            # Remove peer from MongoDB if it exists
-            if peers_collection.find_one({"name": name}):
-                peers_collection.delete_one({"name": name})
-                response = {"message": "DE-REGISTERED", "name": name}
-                self._send_response(response, 200)
-            else:
-                response = {"error": "Name not registered."}
-                self._send_response(response, 400)
-        else:
-            self._send_response({"error": "Not found"}, 404)
-
-def run_server(server_class=ThreadedHTTPServer, handler_class=MyRequestHandler, port=3002):
-    server_address = ('', port)
-    httpd = server_class(server_address, handler_class)
-    print(f'Serving on port {port}')
-    httpd.serve_forever()
-
-if __name__ == '__main__':
-    run_server()
+    if data.get("action") == "register":
+        handle_register(data, client_address)
+    elif data.get("action") == "deregister":
+        handle_deregister(data, client_address)
